@@ -276,10 +276,463 @@ db_ok = db is not None
 now = datetime.utcnow()
 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
+# ── MOCK DATA FOR DEMO MODE ────────────────────────────────────
+MOCK_PAST_INCIDENTS = [
+    {
+        "title": "Payment Status Field Rename Cascade Failure",
+        "description": (
+            "Engineer renamed payment_status to payment_state in the orders collection "
+            "without updating downstream services. The checkout service, analytics pipeline, "
+            "and refund processor all read payment_status and began returning null values. "
+            "This caused 100% of payment status checks to fail silently."
+        ),
+        "field_changed": "payment_status",
+        "collections_affected": ["orders", "refunds", "analytics"],
+        "services_affected": ["checkout-service", "analytics-pipeline", "refund-processor"],
+        "fix_applied": "Dual-write migration: wrote to both payment_status and payment_state for 48h, then deprecated old field",
+        "recovery_time_hours": 6,
+        "severity": "P0",
+        "date": (now - timedelta(days=90)).strftime("%Y-%m-%d"),
+        "root_cause": "No backward compatibility window, immediate hard cutover",
+        "lesson_learned": "Always use dual-write for field renames. Never hard-cut."
+    },
+    {
+        "title": "Missing Compound Index Caused Orders Page Timeout",
+        "description": (
+            "New feature added db.orders.find({customerId, status}).sort({createdAt:-1}) "
+            "query without a compound index. On dev (1,200 docs) response was 20ms. "
+            "In production (800,000 docs) query took 14 seconds and caused request timeouts."
+        ),
+        "field_changed": "customerId",
+        "collections_affected": ["orders"],
+        "services_affected": ["order-service", "customer-portal"],
+        "fix_applied": "db.orders.createIndex({customerId:1, status:1, createdAt:-1}) — immediate relief",
+        "recovery_time_hours": 2,
+        "severity": "P1",
+        "date": (now - timedelta(days=45)).strftime("%Y-%m-%d"),
+        "root_cause": "Collection scan on high-cardinality field without index",
+        "lesson_learned": "All queries on orders collection require compound index review before deploy"
+    },
+    {
+        "title": "Schema Migration Without Backfill Broke Analytics",
+        "description": (
+            "Added new required field 'region' to the users collection. "
+            "Existing 2.3M user documents did not have this field. "
+            "Analytics dashboards showing user segmentation by region returned empty data "
+            "for all records created before the migration."
+        ),
+        "field_changed": "region",
+        "collections_affected": ["users", "analytics"],
+        "services_affected": ["analytics-service", "reporting-dashboard"],
+        "fix_applied": "Backfill script to add region='unknown' to all existing documents, then re-run analytics",
+        "recovery_time_hours": 4,
+        "severity": "P1",
+        "date": (now - timedelta(days=120)).strftime("%Y-%m-%d"),
+        "root_cause": "New field added without default value or backfill for existing documents",
+        "lesson_learned": "Schema changes must include migration script for existing data"
+    },
+    {
+        "title": "Index Drop Caused Full Collection Scan in Prod",
+        "description": (
+            "PR to 'clean up indexes' removed the email_1 index from users collection, "
+            "believing it was unused. Login queries (find by email) went from 2ms to 8 seconds. "
+            "User login failure rate hit 34%."
+        ),
+        "field_changed": "email",
+        "collections_affected": ["users"],
+        "services_affected": ["auth-service", "user-service"],
+        "fix_applied": "Recreated db.users.createIndex({email:1}, {unique:true}) — query time back to 2ms",
+        "recovery_time_hours": 1,
+        "severity": "P0",
+        "date": (now - timedelta(days=60)).strftime("%Y-%m-%d"),
+        "root_cause": "Index usage was not checked before removal (Atlas Performance Advisor not consulted)",
+        "lesson_learned": "Always check Atlas Performance Advisor before dropping any index"
+    },
+    {
+        "title": "Aggregation Pipeline $lookup Without Index Timed Out",
+        "description": (
+            "New reporting feature added $lookup from orders to products without an index "
+            "on the foreign key. Pipeline took 45 seconds on 500K orders, "
+            "causing gateway timeout on the reporting endpoint."
+        ),
+        "field_changed": "productId",
+        "collections_affected": ["orders", "products"],
+        "services_affected": ["reporting-service"],
+        "fix_applied": "Added {productId:1} index to products collection. Pipeline time: 45s → 0.3s",
+        "recovery_time_hours": 1,
+        "severity": "P2",
+        "date": (now - timedelta(days=30)).strftime("%Y-%m-%d"),
+        "root_cause": "$lookup foreign field not indexed",
+        "lesson_learned": "All $lookup foreign fields must have indexes"
+    },
+    {
+        "title": "Unindexed Sort Caused Memory Limit Exceeded Error",
+        "description": (
+            "Reporting query sorted 2M documents without an index on the sort field. "
+            "MongoDB threw 'Executor error: OperationFailed: Sort exceeded memory limit of 100MB'."
+        ),
+        "field_changed": "createdAt",
+        "collections_affected": ["transactions"],
+        "services_affected": ["finance-reporting"],
+        "fix_applied": "Added {createdAt:-1} index. Added allowDiskUse:true as temporary workaround",
+        "recovery_time_hours": 3,
+        "severity": "P1",
+        "date": (now - timedelta(days=75)).strftime("%Y-%m-%d"),
+        "root_cause": "In-memory sort limit hit on unindexed field with large result set",
+        "lesson_learned": "Always index sort fields. Use allowDiskUse as emergency fallback only."
+    }
+]
+
+MOCK_PR_ANALYSES = [
+    {
+        "pr_id": 142,
+        "pr_title": "Rename payment_status to payment_state in orders schema",
+        "pr_url": "https://github.com/AbhishekGupta0164/Google-Cloud-Rapid-Agent-Hackathon-/pull/142",
+        "pr_author": "johndoe",
+        "repo": "checkout-service",
+        "description": "Rename the order status field to match our new naming standard. Also update downstream checkout APIs.",
+        "files_changed": ["models/Order.js", "controllers/Checkout.js", "tests/checkout.test.js"],
+        "mongo_fields_changed": ["payment_status", "payment_state"],
+        "collections_mentioned": ["orders", "refunds", "analytics"],
+        "risk_keywords": ["rename", "status"],
+        "has_schema_change": True,
+        "has_query_change": True,
+        "timestamp": now - timedelta(minutes=45),
+        "status": "complete",
+        "risk_score": 0.92,
+        "risk_level": "CRITICAL",
+        "matched_incidents": [MOCK_PAST_INCIDENTS[0]],
+        "index_warnings": ["No compound index found matching sorting fields: {customerId: 1, status: 1}"],
+        "comment_posted": True
+    },
+    {
+        "pr_id": 141,
+        "pr_title": "Refactor transactions aggregation pipeline",
+        "pr_url": "https://github.com/AbhishekGupta0164/Google-Cloud-Rapid-Agent-Hackathon-/pull/141",
+        "pr_author": "alice",
+        "repo": "finance-backend",
+        "description": "Implements new lookup logic for transactions aggregation pipeline to join customer profiles.",
+        "files_changed": ["pipelines/transactions.py", "db/queries.py"],
+        "mongo_fields_changed": ["customerId"],
+        "collections_mentioned": ["transactions", "users"],
+        "risk_keywords": ["aggregate", "lookup"],
+        "has_schema_change": False,
+        "has_query_change": True,
+        "timestamp": now - timedelta(hours=3),
+        "status": "complete",
+        "risk_score": 0.68,
+        "risk_level": "HIGH",
+        "matched_incidents": [MOCK_PAST_INCIDENTS[4]],
+        "index_warnings": [],
+        "comment_posted": True
+    },
+    {
+        "pr_id": 140,
+        "pr_title": "Add user region field to database model",
+        "pr_url": "https://github.com/AbhishekGupta0164/Google-Cloud-Rapid-Agent-Hackathon-/pull/140",
+        "pr_author": "bob_developer",
+        "repo": "user-service",
+        "description": "Add region support to user schemas to support localized regulatory compliance checks.",
+        "files_changed": ["schemas/User.js", "services/UserManagement.js"],
+        "mongo_fields_changed": ["region"],
+        "collections_mentioned": ["users", "analytics"],
+        "risk_keywords": ["add field", "schema"],
+        "has_schema_change": True,
+        "has_query_change": False,
+        "timestamp": now - timedelta(hours=6),
+        "status": "complete",
+        "risk_score": 0.74,
+        "risk_level": "HIGH",
+        "matched_incidents": [MOCK_PAST_INCIDENTS[2]],
+        "index_warnings": ["No default value or backfill migration found for new required field 'region'!"],
+        "comment_posted": True
+    },
+    {
+        "pr_id": 139,
+        "pr_title": "Clean up unused database indexes",
+        "pr_url": "https://github.com/AbhishekGupta0164/Google-Cloud-Rapid-Agent-Hackathon-/pull/139",
+        "pr_author": "admin_dave",
+        "repo": "infrastructure",
+        "description": "Removes outdated indexes on users collection to improve write performance.",
+        "files_changed": ["scripts/cleanup_indexes.js"],
+        "mongo_fields_changed": [],
+        "collections_mentioned": ["users"],
+        "risk_keywords": ["drop index"],
+        "has_schema_change": True,
+        "has_query_change": False,
+        "timestamp": now - timedelta(hours=14),
+        "status": "complete",
+        "risk_score": 0.88,
+        "risk_level": "CRITICAL",
+        "matched_incidents": [MOCK_PAST_INCIDENTS[3]],
+        "index_warnings": ["Warning: Dropping 'email_1' might impact high-frequency queries in auth-service."],
+        "comment_posted": True
+    },
+    {
+        "pr_id": 138,
+        "pr_title": "Update README deployment instructions",
+        "pr_url": "https://github.com/AbhishekGupta0164/Google-Cloud-Rapid-Agent-Hackathon-/pull/138",
+        "pr_author": "charlie_ux",
+        "repo": "auth-portal",
+        "description": "Minor changes to documentation to clarify local running process.",
+        "files_changed": ["README.md"],
+        "mongo_fields_changed": [],
+        "collections_mentioned": [],
+        "risk_keywords": [],
+        "has_schema_change": False,
+        "has_query_change": False,
+        "timestamp": now - timedelta(days=1, hours=2),
+        "status": "complete",
+        "risk_score": 0.04,
+        "risk_level": "LOW",
+        "matched_incidents": [],
+        "index_warnings": [],
+        "comment_posted": False
+    },
+    {
+        "pr_id": 137,
+        "pr_title": "Optimize login find query performance",
+        "pr_url": "https://github.com/AbhishekGupta0164/Google-Cloud-Rapid-Agent-Hackathon-/pull/137",
+        "pr_author": "alice",
+        "repo": "auth-service",
+        "description": "Improve user lookup by ensuring lowercase normalization of emails.",
+        "files_changed": ["controllers/Auth.js"],
+        "mongo_fields_changed": ["email"],
+        "collections_mentioned": ["users"],
+        "risk_keywords": ["find", "email"],
+        "has_schema_change": False,
+        "has_query_change": True,
+        "timestamp": now - timedelta(days=2),
+        "status": "complete",
+        "risk_score": 0.12,
+        "risk_level": "LOW",
+        "matched_incidents": [],
+        "index_warnings": [],
+        "comment_posted": False
+    }
+]
+
+MOCK_AUDIT_LOG = [
+    {
+        "action_type": "risk_comment_posted",
+        "agent_name": "action_agent",
+        "pr_id": 142,
+        "details": {"risk_level": "CRITICAL", "risk_score": 0.92, "comment_posted": True},
+        "timestamp": now - timedelta(minutes=40)
+    },
+    {
+        "action_type": "report_generated",
+        "agent_name": "risk_narrator",
+        "pr_id": 142,
+        "details": {"risk_level": "CRITICAL", "risk_score": 0.92},
+        "timestamp": now - timedelta(minutes=42)
+    },
+    {
+        "action_type": "scale_test_failed",
+        "agent_name": "scale_tester",
+        "pr_id": 142,
+        "details": {"is_collection_scan": True, "suggested_index": "{customerId: 1, status: 1}"},
+        "timestamp": now - timedelta(minutes=43)
+    },
+    {
+        "action_type": "similarity_search",
+        "agent_name": "analyst",
+        "pr_id": 142,
+        "details": {"matched_incidents_count": 1, "top_match_score": 0.89},
+        "timestamp": now - timedelta(minutes=44)
+    },
+    {
+        "action_type": "pr_received",
+        "agent_name": "harvester",
+        "pr_id": 142,
+        "details": {"repo": "checkout-service", "files_changed": 3},
+        "timestamp": now - timedelta(minutes=45)
+    },
+    {
+        "action_type": "risk_comment_posted",
+        "agent_name": "action_agent",
+        "pr_id": 141,
+        "details": {"risk_level": "HIGH", "risk_score": 0.68, "comment_posted": True},
+        "timestamp": now - timedelta(hours=2, minutes=55)
+    },
+    {
+        "action_type": "report_generated",
+        "agent_name": "risk_narrator",
+        "pr_id": 141,
+        "details": {"risk_level": "HIGH", "risk_score": 0.68},
+        "timestamp": now - timedelta(hours=2, minutes=57)
+    },
+    {
+        "action_type": "similarity_search",
+        "agent_name": "analyst",
+        "pr_id": 141,
+        "details": {"matched_incidents_count": 1, "top_match_score": 0.72},
+        "timestamp": now - timedelta(hours=2, minutes=59)
+    },
+    {
+        "action_type": "pr_received",
+        "agent_name": "harvester",
+        "pr_id": 141,
+        "details": {"repo": "finance-backend", "files_changed": 2},
+        "timestamp": now - timedelta(hours=3)
+    },
+    {
+        "action_type": "risk_comment_posted",
+        "agent_name": "action_agent",
+        "pr_id": 140,
+        "details": {"risk_level": "HIGH", "risk_score": 0.74, "comment_posted": True},
+        "timestamp": now - timedelta(hours=5, minutes=55)
+    },
+    {
+        "action_type": "report_generated",
+        "agent_name": "risk_narrator",
+        "pr_id": 140,
+        "details": {"risk_level": "HIGH", "risk_score": 0.74},
+        "timestamp": now - timedelta(hours=5, minutes=58)
+    },
+    {
+        "action_type": "pr_received",
+        "agent_name": "harvester",
+        "pr_id": 140,
+        "details": {"repo": "user-service", "files_changed": 2},
+        "timestamp": now - timedelta(hours=6)
+    },
+    {
+        "action_type": "risk_comment_posted",
+        "agent_name": "action_agent",
+        "pr_id": 139,
+        "details": {"risk_level": "CRITICAL", "risk_score": 0.88, "comment_posted": True},
+        "timestamp": now - timedelta(hours=13, minutes=50)
+    },
+    {
+        "action_type": "report_generated",
+        "agent_name": "risk_narrator",
+        "pr_id": 139,
+        "details": {"risk_level": "CRITICAL", "risk_score": 0.88},
+        "timestamp": now - timedelta(hours=13, minutes=52)
+    },
+    {
+        "action_type": "similarity_search",
+        "agent_name": "analyst",
+        "pr_id": 139,
+        "details": {"matched_incidents_count": 1, "top_match_score": 0.85},
+        "timestamp": now - timedelta(hours=13, minutes=55)
+    },
+    {
+        "action_type": "pr_received",
+        "agent_name": "harvester",
+        "pr_id": 139,
+        "details": {"repo": "infrastructure", "files_changed": 1},
+        "timestamp": now - timedelta(hours=14)
+    }
+]
+
+MOCK_QUERY_PATTERNS = [
+    {
+        "collection": "orders",
+        "operation": "find",
+        "query_text": "db.orders.find({customerId: '12345', status: 'ACTIVE'}).sort({createdAt: -1})",
+        "description": "Risky query without compound index. Causes collection scan on orders.",
+        "is_collection_scan": True,
+        "risk_level": "CRITICAL",
+        "suggested_index": "db.orders.createIndex({customerId: 1, status: 1, createdAt: -1})",
+        "timestamp": now - timedelta(minutes=43)
+    },
+    {
+        "collection": "transactions",
+        "operation": "find",
+        "query_text": "db.transactions.find({}).sort({createdAt: -1})",
+        "description": "Sorting large result set without index. Leads to in-memory sort warning.",
+        "is_collection_scan": False,
+        "risk_level": "HIGH",
+        "suggested_index": "db.transactions.createIndex({createdAt: -1})",
+        "timestamp": now - timedelta(hours=3, minutes=5)
+    },
+    {
+        "collection": "users",
+        "operation": "find",
+        "query_text": "db.users.find({email: 'test@example.com'})",
+        "description": "Login query running without index after index drop.",
+        "is_collection_scan": True,
+        "risk_level": "CRITICAL",
+        "suggested_index": "db.users.createIndex({email: 1}, {unique: true})",
+        "timestamp": now - timedelta(hours=13, minutes=56)
+    }
+]
+
+MOCK_CHANGE_REQUESTS = [
+    {
+        "pr_id": 142,
+        "pr_title": "Rename payment_status to payment_state in orders schema",
+        "repo": "checkout-service",
+        "risk_level": "CRITICAL",
+        "risk_score": 0.92,
+        "status": "awaiting_approval",
+        "created_at": now - timedelta(minutes=45),
+        "approved_by": None,
+        "approved_at": None
+    },
+    {
+        "pr_id": 139,
+        "pr_title": "Clean up unused database indexes",
+        "repo": "infrastructure",
+        "risk_level": "CRITICAL",
+        "risk_score": 0.88,
+        "status": "approved",
+        "created_at": now - timedelta(hours=14),
+        "approved_by": "lead_dave",
+        "approved_at": now - timedelta(hours=13)
+    }
+]
+
+
+def get_mock_collection(name: str) -> list:
+    if name == "past_incidents":
+        return MOCK_PAST_INCIDENTS
+    elif name == "pr_analyses":
+        return MOCK_PR_ANALYSES
+    elif name in ("audit_log", "audit_logs"):
+        return MOCK_AUDIT_LOG
+    elif name == "query_patterns":
+        return MOCK_QUERY_PATTERNS
+    elif name == "change_requests":
+        return MOCK_CHANGE_REQUESTS
+    return []
+
 
 def safe_count(collection_name: str, query: dict = None) -> int:
     if not db_ok:
-        return 0
+        items = get_mock_collection(collection_name)
+        if not query:
+            return len(items)
+        count = 0
+        for item in items:
+            match = True
+            for k, v in query.items():
+                if k == "timestamp":
+                    if "$gte" in v:
+                        item_ts = item.get("timestamp") or item.get("created_at") or now
+                        if not isinstance(item_ts, datetime):
+                            continue
+                        if item_ts < v["$gte"]:
+                            match = False
+                            break
+                elif k == "action_type":
+                    if item.get("action_type") != v:
+                        match = False
+                        break
+                elif k == "risk_level":
+                    if item.get("risk_level") != v:
+                        match = False
+                        break
+                elif k == "status":
+                    if item.get("status") != v:
+                        match = False
+                        break
+            if match:
+                count += 1
+        return count
+
     try:
         return db[collection_name].count_documents(query or {})
     except Exception:
@@ -289,9 +742,44 @@ def safe_count(collection_name: str, query: dict = None) -> int:
 def safe_find(collection_name: str, query: dict = None, sort_field: str = "timestamp",
               limit: int = 10, exclude: list = None) -> list:
     if not db_ok:
-        return []
+        items = get_mock_collection(collection_name)
+        filtered_items = []
+        for item in items:
+            match = True
+            if query:
+                for k, v in query.items():
+                    if k == "timestamp":
+                        if "$gte" in v:
+                            item_ts = item.get("timestamp") or item.get("created_at") or now
+                            if not isinstance(item_ts, datetime):
+                                continue
+                            if item_ts < v["$gte"]:
+                                match = False
+                                break
+                    elif k == "action_type":
+                        if item.get("action_type") != v:
+                            match = False
+                            break
+                    elif k == "risk_level":
+                        if item.get("risk_level") != v:
+                            match = False
+                            break
+                    elif k == "status":
+                        if item.get("status") != v:
+                            match = False
+                            break
+            if match:
+                filtered_items.append(dict(item))
+        if sort_field:
+            def sort_key(x):
+                val = x.get(sort_field)
+                if val is None:
+                    val = x.get("timestamp") or x.get("created_at") or x.get("date") or ""
+                return val
+            filtered_items.sort(key=sort_key, reverse=True)
+        return filtered_items[:limit]
+
     try:
-        # BUG FIX: Only pass projection dict when we actually have fields to exclude
         projection = {k: 0 for k in (exclude or [])}
         cursor = db[collection_name].find(query or {}, projection if projection else None)
         if sort_field:
@@ -325,9 +813,11 @@ with st.sidebar:
                     '<span style="font-size:0.78rem;color:#2ed573;font-weight:500;">MongoDB Connected</span>'
                     '</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div style="padding:8px 12px;background:rgba(255,71,87,0.08);'
-                    'border:1px solid rgba(255,71,87,0.2);border-radius:10px;margin-bottom:1rem;">'
-                    '<span style="font-size:0.78rem;color:#ff4757;">⚠ DB Disconnected</span>'
+        st.markdown('<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;'
+                    'background:rgba(0,217,255,0.08);border:1px solid rgba(0,217,255,0.2);'
+                    'border-radius:10px;margin-bottom:1rem;">'
+                    '<span class="pulse-dot" style="background:#00d9ff;box-shadow:0 0 0 0 rgba(0,217,255,0.4);"></span>'
+                    '<span style="font-size:0.78rem;color:#00d9ff;font-weight:500;">Demo Mode Active</span>'
                     '</div>', unsafe_allow_html=True)
 
     page = st.radio(
