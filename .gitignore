@@ -47,7 +47,7 @@ data/raw/
 data/processed/
 *.csv
 *.json.bak
-*.mcp_config.json
+data/mcp_config.json
 
 # Streamlit
 .streamlit/
