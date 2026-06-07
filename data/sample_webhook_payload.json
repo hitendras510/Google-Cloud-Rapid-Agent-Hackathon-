@@ -4,43 +4,25 @@
   "pull_request": {
     "number": 142,
     "title": "Rename payment_status to payment_state in orders collection",
-    "body": "This change standardises our field naming convention.\n\nAll references to `payment_status` in the orders collection should be updated to `payment_state`. This affects:\n- checkout service\n- refund processor\n- analytics pipeline\n\nField rename in MongoDB schema for orders collection.",
+    "body": "This change standardises our field naming convention.",
     "html_url": "https://github.com/myorg/myrepo/pull/142",
     "state": "open",
-    "user": {
-      "login": "developer_name",
-      "id": 12345678
-    },
+    "user": { "login": "developer_name", "id": 12345678 },
     "head": {
       "sha": "abc123def456abc123def456abc123def456abc1",
-      "ref": "feature/rename-payment-field",
-      "label": "myorg:feature/rename-payment-field"
+      "ref": "feature/rename-payment-field"
     },
-    "base": {
-      "sha": "main000def456abc123def456abc123def456abc",
-      "ref": "main",
-      "label": "myorg:main"
-    },
-    "merged": false,
-    "mergeable": true,
-    "commits": 3,
+    "base": { "ref": "main" },
+    "created_at": "2026-06-05T10:30:00Z",
     "additions": 47,
     "deletions": 47,
-    "changed_files": 4,
-    "created_at": "2026-06-05T10:30:00Z",
-    "updated_at": "2026-06-05T10:30:00Z"
+    "changed_files": 4
   },
   "repository": {
-    "id": 987654321,
-    "name": "myrepo",
+    "id": 123456789,
     "full_name": "myorg/myrepo",
-    "private": false,
-    "html_url": "https://github.com/myorg/myrepo",
-    "description": "Production e-commerce platform",
-    "default_branch": "main"
+    "name": "myrepo",
+    "private": false
   },
-  "sender": {
-    "login": "developer_name",
-    "id": 12345678
-  }
+  "sender": { "login": "developer_name", "id": 12345678 }
 }

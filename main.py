@@ -77,7 +77,7 @@ async def root():
 
 @app.get("/health")
 async def health():
-    db_ok = ping() if db else False
+    db_ok = ping() if db is not None else False
     return {
         "status": "healthy" if db_ok else "degraded",
         "db": "connected" if db_ok else "disconnected",

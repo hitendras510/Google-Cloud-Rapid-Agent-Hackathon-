@@ -35,6 +35,11 @@ from main import verify_github_signature
 class TestSettings:
     def test_settings_reads_env_vars(self):
         """Settings should read env vars in __post_init__."""
+        # Force-override env vars AFTER .env may have been loaded by main.py import
+        import os
+        os.environ["MONGODB_URI"] = "mongodb://localhost:27017"
+        os.environ["GEMINI_API_KEY"] = "test_key"
+        os.environ["GITHUB_TOKEN"] = "test_token"
         s = Settings()
         assert s.MONGODB_URI == "mongodb://localhost:27017"
         assert s.GEMINI_API_KEY == "test_key"
@@ -300,8 +305,12 @@ class TestFastAPIEndpoints:
     @pytest.fixture
     def client(self):
         from fastapi.testclient import TestClient
-        from main import app
-        return TestClient(app)
+        import main
+        # Patch get_db and ping so lifespan initialises main.db and main.settings correctly
+        with patch("main.get_db", return_value=MagicMock()), \
+             patch("main.ping", return_value=True):
+            with TestClient(main.app, raise_server_exceptions=False) as c:
+                yield c
 
     def test_health_endpoint(self, client):
         response = client.get("/health")
@@ -318,10 +327,19 @@ class TestFastAPIEndpoints:
         assert len(data["agents"]) == 5
 
     def test_webhook_ignores_non_pr_events(self, client):
+        import json, hmac as _hmac, hashlib
+        import main
+        payload = json.dumps({"action": "labeled"}).encode()
+        secret = main.settings.GITHUB_WEBHOOK_SECRET or "test_secret"
+        sig = "sha256=" + _hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
         response = client.post(
             "/webhook/github",
-            json={"action": "labeled"},
-            headers={"X-GitHub-Event": "issues", "X-Hub-Signature-256": ""}
+            content=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-GitHub-Event": "issues",
+                "X-Hub-Signature-256": sig,
+            },
         )
         assert response.status_code == 200
         assert response.json()["status"] == "ignored"

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mongodb": {
+      "command": "mongodb-mcp-server",
+      "args": [],
+      "env": {
+        "MDB_MCP_CONNECTION_STRING":"mongodb+srv://hitendra_123:FOF1TWVN2ERYV88q@cluster0.cicgyky.mongodb.net/?appName=Cluster0"
+      }
+    }
+  }
+}
